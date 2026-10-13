@@ -95,3 +95,56 @@ fn provided_exports_match_expected_summaries_and_export() {
     let exported_total = exported_total.expect("export must include 실 근무시간 합계");
     assert!((exported_total - 9_678.0 / 1_440.0).abs() < 0.000_001);
 }
+
+#[test]
+#[ignore = "requires the private 2026-10-13 attendance export"]
+fn subtracts_recorded_outing_time_from_worked_time() {
+    let Some(path) = env::var_os("AMARANTH_BREAK_SAMPLE_PATH").map(PathBuf::from) else {
+        eprintln!("AMARANTH_BREAK_SAMPLE_PATH is unset; skipping break-time assertion");
+        return;
+    };
+    if !path.is_file() {
+        eprintln!(
+            "Break-time sample is missing at {}; skipping assertion",
+            path.display()
+        );
+        return;
+    }
+    let bytes = fs::read(&path).unwrap();
+    let rows = read_rows(&bytes).unwrap();
+    let today = NaiveDate::from_ymd_opt(2026, 10, 13).unwrap();
+    let Analysis::Ready { report } = analyze(&rows, &BTreeMap::new(), today) else {
+        panic!("expected the supplied workbook to produce a report");
+    };
+    let row = report
+        .rows
+        .iter()
+        .find(|row| row.date == "2026-10-06")
+        .expect("the recorded-rest sample row should be present");
+    assert_eq!(
+        row.break_min, 60,
+        "the standard lunch break remains 60 minutes"
+    );
+    assert_eq!(row.final_min, Some(466), "Excel's basic work time is 7:46");
+    assert_eq!(row.note, "외출 0:30 추가 차감");
+    let output = env::temp_dir().join(format!("amaranth-outing-{}.xlsx", std::process::id()));
+    write_report(&report, &output).unwrap();
+    let exported = fs::read(&output).unwrap();
+    let _ = fs::remove_file(&output);
+    let mut workbook = Xlsx::new(Cursor::new(exported)).unwrap();
+    let sheet = workbook.worksheet_range_at(0).unwrap().unwrap();
+    let exported_row = sheet
+        .rows()
+        .find(|cells| cells.first() == Some(&Data::String("2026-10-06".to_owned())))
+        .expect("the exported report should include the affected date");
+    let exported_final = match exported_row.get(9) {
+        Some(Data::DateTime(value)) => (value.as_f64() * 1440.0).round() as i32,
+        Some(Data::Float(value)) => (*value * 1440.0).round() as i32,
+        _ => panic!("exported final work time should be numeric"),
+    };
+    assert_eq!(exported_final, 466);
+    assert_eq!(
+        exported_row.get(10),
+        Some(&Data::String("외출 0:30 추가 차감".to_owned()))
+    );
+}

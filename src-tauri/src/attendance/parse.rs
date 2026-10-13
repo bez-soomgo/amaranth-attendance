@@ -132,6 +132,62 @@ fn parse_time(cell: Option<&Data>, date: &str, column_name: &str) -> Result<Opti
     })
 }
 
+fn parse_korean_duration(value: &str) -> Option<i32> {
+    let compact = value
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
+    let mut remaining = compact.as_str();
+    let mut total = 0_i32;
+    let mut found_unit = false;
+
+    if let Some(position) = remaining.find("시간") {
+        let hours = remaining[..position].parse::<i32>().ok()?;
+        if hours < 0 {
+            return None;
+        }
+        total = hours.checked_mul(60)?;
+        remaining = &remaining[position + "시간".len()..];
+        found_unit = true;
+    }
+    if let Some(position) = remaining.find('분') {
+        let minutes = remaining[..position].parse::<i32>().ok()?;
+        if minutes < 0 {
+            return None;
+        }
+        total = total.checked_add(minutes)?;
+        remaining = &remaining[position + '분'.len_utf8()..];
+        found_unit = true;
+    }
+
+    (found_unit && remaining.is_empty()).then_some(total)
+}
+
+fn parse_duration(
+    cell: Option<&Data>,
+    date: &str,
+    column_name: &str,
+) -> Result<Option<i32>, String> {
+    let Some(value) = cell else {
+        return Ok(None);
+    };
+    let parsed = match value {
+        Data::Empty => return Ok(None),
+        Data::String(text) if text.trim().is_empty() => return Ok(None),
+        Data::String(text) => parse_hm(text.trim()).or_else(|| parse_korean_duration(text)),
+        Data::Int(minutes) => i32::try_from(*minutes).ok().filter(|minutes| *minutes >= 0),
+        Data::Float(day_fraction) => Some((day_fraction * 1440.0).round() as i32),
+        Data::DateTime(date_time) => Some((date_time.as_f64() * 1440.0).round() as i32),
+        _ => None,
+    };
+    parsed.map(Some).ok_or_else(|| {
+        format!(
+            "{date} {column_name} 값을 읽을 수 없습니다: '{}'",
+            value.to_string().trim()
+        )
+    })
+}
+
 fn column_index(header: &[Data], name: &str) -> Option<usize> {
     header
         .iter()
@@ -174,6 +230,11 @@ pub fn read_rows(bytes: &[u8]) -> Result<Vec<RawRow>, String> {
     let actual_in_col = require_column("실출퇴근시각")?;
     let req_end_col = req_start_col + 1;
     let actual_out_col = actual_in_col + 1;
+    let outing_col = rows
+        .iter()
+        .skip(header_row)
+        .take(3)
+        .find_map(|row| column_index(row, "외출"));
 
     let mut result = Vec::new();
     for row in rows.iter().skip(header_row + 1) {
@@ -185,6 +246,10 @@ pub fn read_rows(bytes: &[u8]) -> Result<Vec<RawRow>, String> {
         };
         let date_label = date.format("%Y-%m-%d").to_string();
         let value_at = |column: usize| row.get(column);
+        let outing_min = match outing_col {
+            Some(column) => parse_duration(value_at(column), &date_label, "외출")?,
+            None => None,
+        };
         result.push(RawRow {
             date,
             weekday: value_at(weekday_col)
@@ -198,6 +263,7 @@ pub fn read_rows(bytes: &[u8]) -> Result<Vec<RawRow>, String> {
                 .unwrap_or_default(),
             req_start: parse_time(value_at(req_start_col), &date_label, "근태신청 시작")?,
             req_end: parse_time(value_at(req_end_col), &date_label, "근태신청 종료")?,
+            outing_min,
             actual_in: parse_time(value_at(actual_in_col), &date_label, "실출근")?,
             actual_out: parse_time(value_at(actual_out_col), &date_label, "실퇴근")?,
         });
@@ -235,6 +301,7 @@ mod tests {
         sheet.write_string(1, 10, "종료").unwrap();
         sheet.write_string(1, 11, "출근").unwrap();
         sheet.write_string(1, 12, "퇴근").unwrap();
+        sheet.write_string(1, 26, "외출").unwrap();
         let data = [
             ["2026-10-01", "목", "정상근무", "", "", "", "08:05", "17:01"],
             ["2026-10-02", "금", "정상근무", "오전반차", "", "", "", ""],
@@ -251,6 +318,8 @@ mod tests {
             sheet.write_string(row, 11, row_data[6]).unwrap();
             sheet.write_string(row, 12, row_data[7]).unwrap();
         }
+        sheet.write_string(3, 26, "30분").unwrap();
+        sheet.write_string(4, 26, "1시간 15분").unwrap();
         let bytes = workbook.save_to_buffer().unwrap();
 
         let rows = read_rows(&bytes).unwrap();
@@ -259,6 +328,9 @@ mod tests {
         assert_eq!(rows[0].item, "");
         assert_eq!(rows[0].actual_in, Some(485));
         assert_eq!(rows[0].actual_out, Some(1021));
+        assert_eq!(rows[0].outing_min, Some(30));
+        assert_eq!(rows[1].outing_min, Some(75));
+        assert_eq!(rows[2].outing_min, None);
         assert_eq!(rows[1].item, "오전반차");
         assert_eq!(rows[1].actual_in, None);
         assert_eq!(rows[2].status, "휴일");

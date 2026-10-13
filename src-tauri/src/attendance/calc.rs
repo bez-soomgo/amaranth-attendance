@@ -78,6 +78,7 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
     let mut in_progress_arrival = None;
     let mut custom_notes = Vec::new();
     let mut noted_custom_items = HashSet::new();
+    let mut outing_deduction_used = false;
 
     for (row, normalized, rule) in resolved {
         let is_custom = custom_rule_is_used(&normalized, custom);
@@ -188,8 +189,9 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
             }
         }
         let break_min = break_min + additional_break;
+        let outing_min = row.outing_min.unwrap_or(0);
         let bonus_min = if rule == ItemRule::Bonus4h { 240 } else { 0 };
-        let final_min = worked_min - break_min + bonus_min;
+        let final_min = worked_min - break_min - outing_min + bonus_min;
         total_min += final_min;
         actual_days += 1;
 
@@ -203,6 +205,10 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
                     format!("업무 중 휴게 {} 추가 차감", fmt_hm(additional_break)),
                 );
             }
+        }
+        if outing_min > 0 {
+            outing_deduction_used = true;
+            append_note(&mut note, format!("외출 {} 추가 차감", fmt_hm(outing_min)));
         }
         if is_custom {
             append_note(&mut note, custom_day_note());
@@ -229,6 +235,9 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
         .iter()
         .map(|note| (*note).to_owned())
         .collect::<Vec<_>>();
+    if outing_deduction_used {
+        notes.push("외출: 엑셀의 제외시간 > 외출 시간을 추가 차감".to_owned());
+    }
     notes.extend(custom_notes);
     Analysis::Ready {
         report: Report {
@@ -267,6 +276,7 @@ mod tests {
             item: item.to_owned(),
             req_start: None,
             req_end: None,
+            outing_min: None,
             actual_in,
             actual_out,
         }
@@ -320,6 +330,21 @@ mod tests {
         half_day.item = "연차".to_owned();
         let leave_report = ready(&[half_day], &BTreeMap::new());
         assert_eq!(leave_report.rows[0].note, "연차 8시간");
+    }
+
+    #[test]
+    fn recorded_outing_time_is_deducted_in_addition_to_the_standard_break() {
+        let mut outing = row(1, "", Some(471), Some(1036));
+        outing.outing_min = Some(30);
+        let report = ready(&[outing], &BTreeMap::new());
+
+        assert_eq!(report.rows[0].break_min, 60);
+        assert_eq!(report.rows[0].final_min, Some(466));
+        assert_eq!(report.rows[0].note, "외출 0:30 추가 차감");
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("외출 시간을 추가 차감")));
     }
 
     #[test]

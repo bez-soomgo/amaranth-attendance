@@ -31,6 +31,7 @@ pub struct RawRow {
     pub item: String,
     pub req_start: Option<i32>,
     pub req_end: Option<i32>,
+    pub outing_min: Option<i32>,
     pub actual_in: Option<i32>,
     pub actual_out: Option<i32>,
 }
