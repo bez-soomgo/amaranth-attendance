@@ -13,7 +13,15 @@ const ruleOptions: Array<{ value: ItemRule; label: string }> = [
   { value: "exclude", label: "계산 제외" },
 ];
 
+type GroupwareError =
+  | { code: "loginRequired"; windowOpen: boolean }
+  | { code: "failed"; message: string };
+
 let currentPath: string | null = null;
+let source: "file" | "groupware" | null = null;
+let loginPoll: number | null = null;
+let fetchInFlight = false;
+let loginFailures = 0;
 let report: Report | null = null;
 let unknownItems: string[] = [];
 let storedRules: Record<string, ItemRule> = {};
@@ -21,6 +29,7 @@ let activeModal: "unknown" | "rules" | null = null;
 let errorMessage = "";
 let successMessage = "";
 let loading = false;
+let loadingMessage = "";
 let arrivalValue = "";
 let bonusChoice = false;
 let todayPlan: TodayPlan | null = null;
@@ -40,6 +49,7 @@ function escapeHtml(value: string): string {
 
 function errorText(error: unknown): string {
   if (typeof error === "string") return error;
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message;
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -82,7 +92,7 @@ function countedRows(rows: DayRow[]): DayRow[] {
 function banner(): string {
   if (errorMessage) return `<div class="banner error" role="alert">${escapeHtml(errorMessage)}</div>`;
   if (successMessage) return `<div class="banner success" role="status">${escapeHtml(successMessage)}</div>`;
-  if (loading) return `<div class="banner loading" role="status">엑셀 파일을 분석하고 있습니다…</div>`;
+  if (loading) return `<div class="banner loading" role="status">${escapeHtml(loadingMessage)}</div>`;
   return "";
 }
 
@@ -97,7 +107,7 @@ function renderEmpty(): string {
   return `<section class="empty-state">
     <div class="empty-mark" aria-hidden="true">근태</div>
     <h2>월별 근무시간을 계산하세요</h2>
-    <p>아마란스에서 내려받은 출결 상세 엑셀 파일을 열거나 끌어다 놓으세요.</p>
+    <p>그룹웨어에서 이번 달 출결을 바로 불러오거나, 아마란스에서 내려받은 출결 상세 엑셀 파일을 열거나 끌어다 놓으세요.</p>
   </section>`;
 }
 
@@ -164,10 +174,9 @@ function renderReport(report: Report): string {
       <td class="note-cell">${escapeHtml(cells[10])}</td>
     </tr>`;
   }).join("");
-  const arrival = report.inProgressArrival ?? arrivalValue;
   return `<section class="report-section">
     <div class="report-heading">
-      <div><p class="eyebrow">${escapeHtml(fileName(currentPath))}</p><h2>${escapeHtml(report.period)} 근무시간</h2></div>
+      <div><p class="eyebrow">${escapeHtml(source === "groupware" ? "그룹웨어 (로그인한 본인 기록)" : fileName(currentPath))}</p><h2>${escapeHtml(report.period)} 근무시간</h2></div>
       <button class="primary" id="save-button" type="button">엑셀로 저장</button>
     </div>
     ${renderSummary(report.summary)}
@@ -180,23 +189,40 @@ function renderReport(report: Report): string {
       </table></div>
     </section>
     <div class="lower-grid">
-      <section class="panel today-panel">
-        <div class="panel-heading"><div><p class="eyebrow">오늘의 계산</p><h3>오늘 퇴근 목표</h3></div></div>
-        <div class="today-fields">
-          <label>출근 시각<input id="today-arrival" type="time" value="${escapeHtml(arrival)}" /></label>
-          <label>오늘 근태<select id="today-bonus">
-            <option value="general" ${bonusChoice ? "" : "selected"}>일반 근무</option>
-            <option value="bonus" ${bonusChoice ? "selected" : ""}>4시간 가산 (반차·생일휴가·단축·건강검진)</option>
-          </select></label>
-        </div>
-        <button class="secondary" id="today-calculate" type="button">계산</button>
-        ${todayPlan ? renderTodayPlan(todayPlan) : ""}
-      </section>
+      ${renderTodayPanel(report)}
       <section class="panel notes-panel">
         <div class="panel-heading"><div><p class="eyebrow">적용된 기준</p><h3>비고</h3></div></div>
         <ul>${report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul>
       </section>
     </div>
+  </section>`;
+}
+
+function renderTodayPanel(report: Report): string {
+  const heading = `<div class="panel-heading"><div><p class="eyebrow">오늘의 계산</p><h3>오늘 퇴근 목표</h3></div></div>`;
+  if (report.inProgressArrival) {
+    return `<section class="panel today-panel">${heading}
+      <div class="today-fields">
+        <div class="today-value"><span>출근 시각 (아마란스 기록)</span><strong>${escapeHtml(report.inProgressArrival)}</strong></div>
+        <label>오늘 근태<select id="today-bonus-auto">
+          <option value="general" ${bonusChoice ? "" : "selected"}>일반 근무</option>
+          <option value="bonus" ${bonusChoice ? "selected" : ""}>4시간 가산 (반차·생일휴가·단축·건강검진)</option>
+        </select></label>
+      </div>
+      ${todayPlan ? renderTodayPlan(todayPlan) : `<div class="today-result" role="status"><span>계산하고 있습니다…</span></div>`}
+    </section>`;
+  }
+  return `<section class="panel today-panel">${heading}
+    <p class="today-hint">오늘 출근 기록이 없어 직접 입력합니다.</p>
+    <div class="today-fields">
+      <label>출근 시각<input id="today-arrival" type="time" value="${escapeHtml(arrivalValue)}" /></label>
+      <label>오늘 근태<select id="today-bonus">
+        <option value="general" ${bonusChoice ? "" : "selected"}>일반 근무</option>
+        <option value="bonus" ${bonusChoice ? "selected" : ""}>4시간 가산 (반차·생일휴가·단축·건강검진)</option>
+      </select></label>
+    </div>
+    <button class="secondary" id="today-calculate" type="button">계산</button>
+    ${todayPlan ? renderTodayPlan(todayPlan) : ""}
   </section>`;
 }
 
@@ -239,9 +265,10 @@ function renderModal(): string {
 function render(): void {
   app.innerHTML = `<div class="app-shell">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark">A</span><div><h1>근무시간 계산기</h1><p>아마란스 출결 엑셀 월간 정리</p></div></div>
+      <div class="brand"><span class="brand-mark">A</span><div><h1>근무시간 계산기</h1><p>아마란스 출결 월간 정리</p></div></div>
       <nav class="header-actions" aria-label="파일 및 규칙">
-        <button class="primary" id="open-button" type="button">엑셀 파일 열기</button>
+        <button class="primary" id="groupware-button" type="button">그룹웨어에서 불러오기</button>
+        <button class="secondary" id="open-button" type="button">엑셀 파일 열기</button>
         <button class="secondary" id="rules-button" type="button">규칙 설정</button>
       </nav>
     </header>
@@ -249,19 +276,123 @@ function render(): void {
     ${renderDropZone()}
     ${report ? renderReport(report) : renderEmpty()}
     ${renderModal()}
-    <footer>파일은 이 기기에서만 처리됩니다. 개인 출결 엑셀 파일은 저장소에 포함되지 않습니다.</footer>
+    <footer>계산은 이 기기에서만 처리됩니다. 그룹웨어 로그인 세션은 이 기기의 앱 설정 폴더에만 저장됩니다.</footer>
   </div>`;
   bindControls();
 }
 
+function stopLoginPoll(): void {
+  if (loginPoll !== null) window.clearInterval(loginPoll);
+  loginPoll = null;
+}
+
 function setError(error: unknown): void {
+  stopLoginPoll();
   errorMessage = errorText(error);
   successMessage = "";
   loading = false;
   render();
 }
 
+function applyAnalysis(analysis: Analysis): void {
+  loading = false;
+  if (analysis.status === "needsRules") {
+    unknownItems = analysis.unknownItems;
+    activeModal = "unknown";
+    render();
+    return;
+  }
+  report = analysis.report;
+  arrivalValue = report.inProgressArrival ?? "";
+  bonusChoice = report.inProgressBonus;
+  render();
+  if (report.inProgressArrival) void autoPlanToday(report);
+}
+
+async function autoPlanToday(current: Report): Promise<void> {
+  try {
+    const plan = await invoke<TodayPlan>("plan_today", {
+      summary: current.summary,
+      arrival: current.inProgressArrival,
+      bonus: bonusChoice,
+    });
+    if (report !== current) return;
+    todayPlan = plan;
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+function resetResult(message: string): void {
+  report = null;
+  unknownItems = [];
+  activeModal = null;
+  todayPlan = null;
+  arrivalValue = "";
+  errorMessage = "";
+  successMessage = "";
+  loading = true;
+  loadingMessage = message;
+  render();
+}
+
+async function loadGroupware(): Promise<void> {
+  stopLoginPoll();
+  source = "groupware";
+  currentPath = null;
+  resetResult("그룹웨어에서 이번 달 출결을 불러오고 있습니다…");
+  await fetchGroupware();
+}
+
+async function fetchGroupware(): Promise<void> {
+  if (fetchInFlight) return;
+  fetchInFlight = true;
+  try {
+    await fetchGroupwareOnce();
+  } finally {
+    fetchInFlight = false;
+  }
+}
+
+async function fetchGroupwareOnce(): Promise<void> {
+  try {
+    const analysis = await invoke<Analysis>("fetch_groupware");
+    stopLoginPoll();
+    applyAnalysis(analysis);
+  } catch (raw) {
+    const error = raw as GroupwareError;
+    if (error?.code === "failed" && loginPoll !== null && ++loginFailures < 10) return;
+    if (error?.code === "loginRequired") {
+      if (loginPoll !== null) {
+        if (!error.windowOpen) setError("로그인 창이 닫혔습니다. 다시 불러오려면 '그룹웨어에서 불러오기'를 누르세요.");
+        return;
+      }
+      try {
+        await invoke("open_groupware_login");
+      } catch (openError) {
+        setError(openError);
+        return;
+      }
+      loading = true;
+      loadingMessage = "그룹웨어 로그인 창에서 로그인하면 자동으로 불러옵니다…";
+      render();
+      loginFailures = 0;
+      loginPoll = window.setInterval(() => void fetchGroupware(), 2000);
+      return;
+    }
+    setError(raw);
+  }
+}
+
+async function reanalyze(): Promise<void> {
+  if (source === "groupware") await loadGroupware();
+  else if (currentPath) await analyzeCurrent(currentPath);
+}
+
 async function analyzeCurrent(path: string): Promise<void> {
+  stopLoginPoll();
+  source = "file";
   currentPath = path;
   report = null;
   unknownItems = [];
@@ -271,19 +402,10 @@ async function analyzeCurrent(path: string): Promise<void> {
   errorMessage = "";
   successMessage = "";
   loading = true;
+  loadingMessage = "엑셀 파일을 분석하고 있습니다…";
   render();
   try {
-    const analysis = await invoke<Analysis>("analyze_file", { path });
-    loading = false;
-    if (analysis.status === "needsRules") {
-      unknownItems = analysis.unknownItems;
-      activeModal = "unknown";
-      render();
-      return;
-    }
-    report = analysis.report;
-    arrivalValue = report.inProgressArrival ?? "";
-    render();
+    applyAnalysis(await invoke<Analysis>("analyze_file", { path }));
   } catch (error) {
     setError(error);
   }
@@ -306,7 +428,7 @@ async function chooseFile(): Promise<void> {
 }
 
 async function saveReport(): Promise<void> {
-  if (!currentPath || !report) return;
+  if (!report || (source === "file" && !currentPath)) return;
   errorMessage = "";
   successMessage = "";
   try {
@@ -315,7 +437,8 @@ async function saveReport(): Promise<void> {
       filters: [{ name: "Excel", extensions: ["xlsx"] }],
     });
     if (!output) return;
-    await invoke("export_report", { path: currentPath, outPath: output });
+    if (source === "groupware") await invoke("export_groupware_report", { outPath: output });
+    else await invoke("export_report", { path: currentPath, outPath: output });
     successMessage = `저장했습니다: ${output}`;
     render();
   } catch (error) {
@@ -349,7 +472,7 @@ async function applyUnknownRules(): Promise<void> {
   try {
     await invoke("set_item_rules", { rules });
     activeModal = null;
-    if (currentPath) await analyzeCurrent(currentPath);
+    await reanalyze();
   } catch (error) {
     setError(error);
   }
@@ -358,9 +481,9 @@ async function applyUnknownRules(): Promise<void> {
 async function deleteRule(item: string): Promise<void> {
   try {
     await invoke("delete_item_rule", { item });
-    if (currentPath) {
+    if (source) {
       activeModal = null;
-      await analyzeCurrent(currentPath);
+      await reanalyze();
     } else {
       storedRules = await invoke<Record<string, ItemRule>>("list_item_rules");
       render();
@@ -391,9 +514,14 @@ async function calculateToday(): Promise<void> {
 
 function bindControls(): void {
   document.querySelector("#open-button")?.addEventListener("click", () => void chooseFile());
+  document.querySelector("#groupware-button")?.addEventListener("click", () => void loadGroupware());
   document.querySelector("#rules-button")?.addEventListener("click", () => void showRules());
   document.querySelector("#save-button")?.addEventListener("click", () => void saveReport());
   document.querySelector("#today-calculate")?.addEventListener("click", () => void calculateToday());
+  document.querySelector<HTMLSelectElement>("#today-bonus-auto")?.addEventListener("change", (event) => {
+    bonusChoice = (event.target as HTMLSelectElement).value === "bonus";
+    if (report) void autoPlanToday(report);
+  });
   document.querySelector("#rules-apply")?.addEventListener("click", () => void applyUnknownRules());
   document.querySelector("#modal-cancel")?.addEventListener("click", () => {
     activeModal = null;
@@ -411,6 +539,7 @@ function bindControls(): void {
 }
 
 render();
+void loadGroupware();
 void getCurrentWebview().onDragDropEvent((event) => {
   if (event.payload.type !== "drop") return;
   const path = event.payload.paths[0];

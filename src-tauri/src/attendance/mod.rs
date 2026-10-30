@@ -1,5 +1,6 @@
 pub mod calc;
 pub mod export;
+pub mod groupware;
 pub mod model;
 pub mod parse;
 pub mod rules;

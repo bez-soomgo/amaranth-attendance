@@ -82,6 +82,8 @@ pub struct Report {
     pub summary: Summary,
     pub notes: Vec<String>,
     pub in_progress_arrival: Option<String>,
+    /// 오늘 근무 중인 날의 근태항목이 4시간 가산 대상인지 여부
+    pub in_progress_bonus: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

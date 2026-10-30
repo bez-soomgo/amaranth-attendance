@@ -76,6 +76,7 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
     let mut leave_days = 0_u32;
     let mut total_min = 0_i32;
     let mut in_progress_arrival = None;
+    let mut in_progress_bonus = false;
     let mut custom_notes = Vec::new();
     let mut noted_custom_items = HashSet::new();
     let mut outing_deduction_used = false;
@@ -150,6 +151,7 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
             };
             let note = if in_progress {
                 in_progress_arrival = row.actual_in.map(fmt_clock);
+                in_progress_bonus = rule == ItemRule::Bonus4h;
                 "오늘 근무 중 — 계산 제외"
             } else {
                 "출퇴근 기록 불완전 — 계산 제외"
@@ -253,6 +255,7 @@ pub fn analyze(rows: &[RawRow], custom: &BTreeMap<String, ItemRule>, today: Naiv
             },
             notes,
             in_progress_arrival,
+            in_progress_bonus,
         },
     }
 }
@@ -367,6 +370,11 @@ mod tests {
         let report = ready(&[row(2, "", Some(510), None)], &BTreeMap::new());
         assert_eq!(report.rows[0].kind, DayKind::InProgress);
         assert_eq!(report.in_progress_arrival.as_deref(), Some("08:30"));
+        assert!(!report.in_progress_bonus);
         assert_eq!(report.summary.work_days, 0);
+
+        let half_day = ready(&[row(2, "오전반차", Some(780), None)], &BTreeMap::new());
+        assert_eq!(half_day.in_progress_arrival.as_deref(), Some("13:00"));
+        assert!(half_day.in_progress_bonus);
     }
 }

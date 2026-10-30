@@ -37,6 +37,7 @@ export interface Report {
   summary: Summary;
   notes: string[];
   inProgressArrival: string | null;
+  inProgressBonus: boolean;
 }
 
 export type Analysis =
