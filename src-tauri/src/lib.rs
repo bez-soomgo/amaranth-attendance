@@ -88,8 +88,23 @@ async fn fetch_groupware(app: AppHandle) -> Result<Analysis, GroupwareError> {
 }
 
 #[tauri::command]
-async fn open_groupware_login(app: AppHandle) -> Result<(), String> {
+async fn open_groupware_login(app: AppHandle) -> Result<bool, String> {
     groupware::open_login_window(&app).map_err(|error| error.message())
+}
+
+#[tauri::command]
+fn save_groupware_credentials(app: AppHandle, login_id: String, password: String) -> Result<(), String> {
+    groupware::save_credentials(&app, &login_id, &password).map_err(|error| error.message())
+}
+
+#[tauri::command]
+fn clear_groupware_credentials(app: AppHandle) -> Result<(), String> {
+    groupware::clear_credentials(&app).map_err(|error| error.message())
+}
+
+#[tauri::command]
+fn groupware_credentials(app: AppHandle) -> Result<Option<String>, String> {
+    groupware::saved_login_id(&app).map_err(|error| error.message())
 }
 
 #[tauri::command]
@@ -120,7 +135,10 @@ pub fn run() {
             plan_today,
             fetch_groupware,
             open_groupware_login,
-            export_groupware_report
+            export_groupware_report,
+            save_groupware_credentials,
+            clear_groupware_credentials,
+            groupware_credentials
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -25,7 +25,7 @@ let loginFailures = 0;
 let report: Report | null = null;
 let unknownItems: string[] = [];
 let storedRules: Record<string, ItemRule> = {};
-let activeModal: "unknown" | "rules" | null = null;
+let activeModal: "unknown" | "rules" | "credentials" | null = null;
 let errorMessage = "";
 let successMessage = "";
 let loading = false;
@@ -33,6 +33,7 @@ let loadingMessage = "";
 let arrivalValue = "";
 let bonusChoice = false;
 let todayPlan: TodayPlan | null = null;
+let savedLoginId: string | null = null;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
@@ -259,6 +260,28 @@ function renderModal(): string {
       <div class="modal-actions"><button class="primary" id="modal-close" type="button">닫기</button></div>
     </section></div>`;
   }
+  if (activeModal === "credentials") {
+    const statusText = savedLoginId
+      ? `<p class="credentials-status">현재 <strong>${escapeHtml(savedLoginId)}</strong> 계정으로 자동 로그인하도록 저장되어 있습니다.</p>`
+      : `<p class="credentials-status">저장된 자동 로그인 계정이 없습니다.</p>`;
+    return `<div class="modal-backdrop"><section class="modal credentials-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">자동 로그인 설정</h2>
+      <div class="modal-content">
+        ${statusText}
+        <fieldset class="credentials-fields">
+          <legend>그룹웨어 계정</legend>
+          <label>아이디<input id="credentials-login-id" type="text" autocomplete="username" value="${escapeHtml(savedLoginId ?? "")}" /></label>
+          <label>비밀번호<input id="credentials-password" type="password" autocomplete="current-password" /></label>
+        </fieldset>
+        <p class="credentials-hint">비밀번호는 이 기기의 키체인(Windows는 자격 증명 관리자)에만 저장되며, 앱 설정 파일에는 저장되지 않습니다.</p>
+      </div>
+      <div class="modal-actions">
+        <button class="secondary" id="credentials-cancel" type="button">취소</button>
+        <button class="delete-rule" id="credentials-delete" type="button" ${savedLoginId ? "" : "disabled"}>삭제</button>
+        <button class="primary" id="credentials-save" type="button">저장</button>
+      </div>
+    </section></div>`;
+  }
   return "";
 }
 
@@ -268,6 +291,7 @@ function render(): void {
       <div class="brand"><span class="brand-mark">A</span><div><h1>근무시간 계산기</h1><p>아마란스 출결 월간 정리</p></div></div>
       <nav class="header-actions" aria-label="파일 및 규칙">
         <button class="primary" id="groupware-button" type="button">그룹웨어에서 불러오기</button>
+        <button class="secondary" id="credentials-button" type="button">자동 로그인 설정</button>
         <button class="secondary" id="open-button" type="button">엑셀 파일 열기</button>
         <button class="secondary" id="rules-button" type="button">규칙 설정</button>
       </nav>
@@ -368,14 +392,17 @@ async function fetchGroupwareOnce(): Promise<void> {
         if (!error.windowOpen) setError("로그인 창이 닫혔습니다. 다시 불러오려면 '그룹웨어에서 불러오기'를 누르세요.");
         return;
       }
+      let auto = false;
       try {
-        await invoke("open_groupware_login");
+        auto = await invoke<boolean>("open_groupware_login");
       } catch (openError) {
         setError(openError);
         return;
       }
       loading = true;
-      loadingMessage = "그룹웨어 로그인 창에서 로그인하면 자동으로 불러옵니다…";
+      loadingMessage = auto
+        ? "저장된 계정으로 로그인하는 중…"
+        : "그룹웨어 로그인 창에서 로그인하면 자동으로 불러옵니다… (자동 로그인은 '자동 로그인 설정'에서 설정할 수 있습니다)";
       render();
       loginFailures = 0;
       loginPoll = window.setInterval(() => void fetchGroupware(), 2000);
@@ -478,6 +505,49 @@ async function applyUnknownRules(): Promise<void> {
   }
 }
 
+async function showCredentials(): Promise<void> {
+  errorMessage = "";
+  successMessage = "";
+  try {
+    savedLoginId = await invoke<string | null>("groupware_credentials");
+    activeModal = "credentials";
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+async function saveCredentials(): Promise<void> {
+  const loginId = document.querySelector<HTMLInputElement>("#credentials-login-id")?.value.trim() ?? "";
+  const password = document.querySelector<HTMLInputElement>("#credentials-password")?.value ?? "";
+  if (!loginId || !password) {
+    errorMessage = "아이디와 비밀번호를 모두 입력하세요.";
+    render();
+    return;
+  }
+  try {
+    await invoke("save_groupware_credentials", { loginId, password });
+    activeModal = null;
+    errorMessage = "";
+    successMessage = "자동 로그인 계정을 저장했습니다.";
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+async function clearCredentials(): Promise<void> {
+  try {
+    await invoke("clear_groupware_credentials");
+    activeModal = null;
+    errorMessage = "";
+    successMessage = "자동 로그인 계정을 삭제했습니다.";
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
 async function deleteRule(item: string): Promise<void> {
   try {
     await invoke("delete_item_rule", { item });
@@ -515,6 +585,7 @@ async function calculateToday(): Promise<void> {
 function bindControls(): void {
   document.querySelector("#open-button")?.addEventListener("click", () => void chooseFile());
   document.querySelector("#groupware-button")?.addEventListener("click", () => void loadGroupware());
+  document.querySelector("#credentials-button")?.addEventListener("click", () => void showCredentials());
   document.querySelector("#rules-button")?.addEventListener("click", () => void showRules());
   document.querySelector("#save-button")?.addEventListener("click", () => void saveReport());
   document.querySelector("#today-calculate")?.addEventListener("click", () => void calculateToday());
@@ -533,6 +604,12 @@ function bindControls(): void {
     activeModal = null;
     render();
   });
+  document.querySelector("#credentials-cancel")?.addEventListener("click", () => {
+    activeModal = null;
+    render();
+  });
+  document.querySelector("#credentials-save")?.addEventListener("click", () => void saveCredentials());
+  document.querySelector("#credentials-delete")?.addEventListener("click", () => void clearCredentials());
   document.querySelectorAll<HTMLButtonElement>("[data-delete-rule]").forEach((button) => {
     button.addEventListener("click", () => void deleteRule(button.dataset.deleteRule ?? ""));
   });
