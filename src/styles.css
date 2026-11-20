@@ -113,6 +113,34 @@ footer { padding: 18px 2px 0; color: #8994a4; font-size: 11px; text-align: cente
 .credentials-fields label { display: grid; gap: 5px; color: #627087; font-size: 12px; }
 .credentials-fields input { min-height: 40px; padding: 8px 10px; border: 1px solid #dbe2ec; border-radius: 7px; color: #29364b; background: white; }
 .credentials-hint { margin: 12px 0 0; color: #8a93a4; font-size: 11.5px; }
+.draft-dialog { width: min(600px, 100%); }
+.draft-hint { margin: 0 0 14px; color: #6b788d; font-size: 12px; }
+.draft-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.draft-choice { display: grid; gap: 4px; padding: 18px 16px; border: 1px solid #dce2eb; border-radius: 10px; color: #263449; background: #fff; text-align: left; }
+.draft-choice:hover { border-color: #8facdf; background: #f2f6ff; }
+.draft-choice strong { font-size: 15px; }
+.draft-choice span { color: #6b788d; font-size: 12px; }
+.draft-form { display: grid; gap: 13px; }
+.draft-form label { display: grid; gap: 5px; color: #627087; font-size: 12px; }
+.draft-form input, .draft-form select { min-height: 40px; padding: 8px 10px; border: 1px solid #dbe2ec; border-radius: 7px; color: #29364b; background: white; }
+.draft-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.draft-fieldset { margin: 0; padding: 0; border: 0; }
+.draft-fieldset legend { padding: 0 0 6px; color: #4f5e74; font-size: 12px; font-weight: 700; }
+.radio-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
+.attendee-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+.attendee-list li { display: flex; align-items: center; gap: 6px; padding: 3px 4px 3px 10px; border: 1px solid #e3e8ef; border-radius: 999px; font-size: 12px; }
+.attendee-list .delete-rule { padding: 2px 8px; border-radius: 999px; font-size: 11px; }
+.receipt-list { display: grid; gap: 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+.receipt-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px 6px 10px; border: 1px solid #e3e8ef; border-radius: 7px; font-size: 12px; overflow-wrap: anywhere; }
+.receipt-hint { margin: 6px 0 0; }
+.attendee-add { display: flex; gap: 8px; }
+.attendee-add input { flex: 1; }
+.club-preview { padding: 12px; border-radius: 8px; background: #f2f6fd; }
+.club-preview-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; color: #4f5e74; font-size: 12px; font-weight: 700; }
+.club-preview-heading .secondary { padding: 5px 12px; font-size: 12px; }
+.club-preview pre { margin: 0; color: #263449; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.draft-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.banner-close { flex: none; border: 0; padding: 0 4px; color: inherit; background: transparent; font-size: 16px; line-height: 1; }
 .empty-rules { padding: 24px 4px; color: #78869a; text-align: center; }
 .saved-rules { display: grid; gap: 8px; margin: 0; padding: 2px 0 10px; list-style: none; }
 .saved-rules li { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 11px 12px; border: 1px solid #e8ecf2; border-radius: 8px; }
@@ -135,4 +163,5 @@ footer { padding: 18px 2px 0; color: #8994a4; font-size: 11px; text-align: cente
   .report-heading { align-items: flex-start; flex-direction: column; }
   .today-fields { grid-template-columns: 1fr; }
   .radio-grid { grid-template-columns: 1fr; }
+  .draft-row, .draft-choices { grid-template-columns: 1fr; }
 }

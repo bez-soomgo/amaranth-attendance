@@ -1,4 +1,5 @@
 pub mod attendance;
+mod draft;
 mod groupware;
 
 use attendance::{
@@ -116,6 +117,31 @@ async fn export_groupware_report(app: AppHandle, out_path: String) -> Result<(),
 }
 
 #[tauri::command]
+fn draft_settings(app: AppHandle) -> Result<draft::DraftSettings, String> {
+    draft::load_settings(&app).map_err(|error| error.message())
+}
+
+#[tauri::command]
+fn set_draft_settings(app: AppHandle, settings: draft::DraftSettings) -> Result<(), String> {
+    draft::save_settings(&app, &settings).map_err(|error| error.message())
+}
+
+#[tauri::command]
+async fn open_leave_draft(app: AppHandle, request: draft::LeaveRequest) -> Result<(), String> {
+    draft::open_leave(&app, request).await.map_err(|error| error.message())
+}
+
+#[tauri::command]
+async fn open_club_draft(app: AppHandle, request: draft::ClubRequest) -> Result<(), String> {
+    draft::open_club(&app, request).await.map_err(|error| error.message())
+}
+
+#[tauri::command]
+fn draft_status() -> draft::DraftStatus {
+    draft::status()
+}
+
+#[tauri::command]
 fn plan_today(summary: Summary, arrival: String, bonus: bool) -> Result<TodayPlan, String> {
     let arrival = parse_hm(&arrival)
         .ok_or_else(|| "출근 시각 형식이 올바르지 않습니다 (HH:MM)".to_owned())?;
@@ -138,7 +164,12 @@ pub fn run() {
             export_groupware_report,
             save_groupware_credentials,
             clear_groupware_credentials,
-            groupware_credentials
+            groupware_credentials,
+            draft_settings,
+            set_draft_settings,
+            open_leave_draft,
+            open_club_draft,
+            draft_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

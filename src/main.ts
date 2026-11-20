@@ -13,6 +13,23 @@ const ruleOptions: Array<{ value: ItemRule; label: string }> = [
   { value: "exclude", label: "계산 제외" },
 ];
 
+type LeaveKind = "annual" | "amHalf" | "pmHalf";
+
+interface DraftSettings {
+  leaveReason: string;
+  clubName: string;
+  cardName: string;
+  attendees: string[];
+  perPerson: number;
+}
+
+interface DraftStatus {
+  id: number;
+  state: "idle" | "opening" | "login" | "filling" | "awaitingReceipts" | "done" | "empty" | "failed" | "closed";
+  step: string;
+  message: string;
+}
+
 type GroupwareError =
   | { code: "loginRequired"; windowOpen: boolean }
   | { code: "failed"; message: string };
@@ -25,7 +42,7 @@ let loginFailures = 0;
 let report: Report | null = null;
 let unknownItems: string[] = [];
 let storedRules: Record<string, ItemRule> = {};
-let activeModal: "unknown" | "rules" | "credentials" | null = null;
+let activeModal: "unknown" | "rules" | "credentials" | "draftChooser" | "leaveDraft" | "clubDraft" | null = null;
 let errorMessage = "";
 let successMessage = "";
 let loading = false;
@@ -34,6 +51,24 @@ let arrivalValue = "";
 let bonusChoice = false;
 let todayPlan: TodayPlan | null = null;
 let savedLoginId: string | null = null;
+let draftKind: "leave" | "club" | null = null;
+let draftPoll: number | null = null;
+let draftNotice: { tone: "info" | "success" | "error"; text: string } | null = null;
+const leaveKinds: Array<{ value: LeaveKind; label: string }> = [
+  { value: "annual", label: "연차" },
+  { value: "amHalf", label: "오전반차" },
+  { value: "pmHalf", label: "오후반차" },
+];
+let leaveForm = { kind: "annual" as LeaveKind, from: "", to: "", reason: "" };
+let clubForm = {
+  month: "",
+  clubName: "커피",
+  cardName: "",
+  attendees: [] as string[],
+  perPerson: 30000,
+  photoLink: "",
+  receipts: [] as string[],
+};
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (character) => {
@@ -95,6 +130,45 @@ function banner(): string {
   if (successMessage) return `<div class="banner success" role="status">${escapeHtml(successMessage)}</div>`;
   if (loading) return `<div class="banner loading" role="status">${escapeHtml(loadingMessage)}</div>`;
   return "";
+}
+
+function draftBanner(): string {
+  if (!draftNotice) return "";
+  const role = draftNotice.tone === "error" ? "alert" : "status";
+  const tone = draftNotice.tone === "info" ? "loading" : draftNotice.tone;
+  return `<div class="banner ${tone} draft-banner" role="${role}"><span>${escapeHtml(draftNotice.text)}</span><button class="banner-close" id="draft-notice-close" type="button" aria-label="안내 닫기">×</button></div>`;
+}
+
+function localDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** 대상 월 선택지: 지난달(기본)과 이번 달. 값은 YYYY-MM 입니다. */
+function clubMonthOptions(): Array<{ value: string; label: string }> {
+  const now = new Date();
+  const previous = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return [previous, new Date(now.getFullYear(), now.getMonth(), 1)].map((date) => ({
+    value: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`,
+    label: `${date.getFullYear()}년 ${date.getMonth() + 1}월`,
+  }));
+}
+
+function formatWon(amount: number): string {
+  if (amount > 0 && amount % 10000 === 0) return `${amount / 10000}만원`;
+  return `${amount.toLocaleString("ko-KR")}원`;
+}
+
+/** 결재 본문에 붙여 넣을 참석자·예산 문구입니다. */
+function clubPreviewText(): string {
+  const month = Number(clubForm.month.split("-")[1] ?? 0);
+  const count = clubForm.attendees.length;
+  const lines = [
+    `${month}월 참석자 : ${clubForm.attendees.join(", ")}`,
+    `${count}명 * ${formatWon(clubForm.perPerson)} = ${formatWon(count * clubForm.perPerson)}`,
+  ];
+  const link = clubForm.photoLink.trim();
+  if (link) lines.push(`활동 사진 : ${link}`);
+  return lines.join("\n");
 }
 
 function renderDropZone(): string {
@@ -282,6 +356,76 @@ function renderModal(): string {
       </div>
     </section></div>`;
   }
+  if (activeModal === "draftChooser") {
+    return `<div class="modal-backdrop"><section class="modal draft-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">기안 작성</h2>
+      <div class="modal-content">
+        <p class="draft-hint">고른 값으로 그룹웨어 양식을 미리 채워 엽니다. 상신(신청완료)은 그룹웨어 창에서 직접 누르세요.</p>
+        <div class="draft-choices">
+          <button class="draft-choice" id="draft-choose-leave" type="button"><strong>연차·반차</strong><span>연차휴가신청서</span></button>
+          <button class="draft-choice" id="draft-choose-club" type="button"><strong>동아리 활동 내역서</strong><span>카드 내역·용도·내용 자동 입력</span></button>
+        </div>
+      </div>
+      <div class="modal-actions"><button class="secondary" id="draft-cancel" type="button">닫기</button></div>
+    </section></div>`;
+  }
+  if (activeModal === "leaveDraft") {
+    const half = leaveForm.kind !== "annual";
+    return `<div class="modal-backdrop"><section class="modal draft-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">연차·반차 신청</h2>
+      <div class="modal-content draft-form">
+        <fieldset class="draft-fieldset">
+          <legend>종류</legend>
+          <div class="radio-grid three">${leaveKinds.map((option) => `<label class="radio-option">
+            <input type="radio" name="leave-kind" value="${option.value}" ${leaveForm.kind === option.value ? "checked" : ""} />
+            <span>${escapeHtml(option.label)}</span>
+          </label>`).join("")}</div>
+        </fieldset>
+        <div class="draft-row">
+          <label>${half ? "날짜" : "시작일"}<input id="leave-from" type="date" value="${escapeHtml(leaveForm.from)}" /></label>
+          ${half ? "" : `<label>종료일<input id="leave-to" type="date" value="${escapeHtml(leaveForm.to)}" /></label>`}
+        </div>
+        <label>사유 (선택)<input id="leave-reason" type="text" value="${escapeHtml(leaveForm.reason)}" placeholder="비고(사유)에 들어갑니다" /></label>
+      </div>
+      <div class="modal-actions"><button class="secondary" id="draft-back" type="button">뒤로</button><button class="primary" id="leave-open" type="button">양식 열기</button></div>
+    </section></div>`;
+  }
+  if (activeModal === "clubDraft") {
+    const attendees = clubForm.attendees.length === 0
+      ? `<p class="empty-rules">참석자를 추가하세요</p>`
+      : `<ul class="attendee-list">${clubForm.attendees.map((name, index) => `<li><span>${escapeHtml(name)}</span><button class="delete-rule" data-remove-attendee="${index}" type="button">삭제</button></li>`).join("")}</ul>`;
+    return `<div class="modal-backdrop"><section class="modal draft-dialog" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <h2 id="modal-title">동아리 활동 내역서</h2>
+      <div class="modal-content draft-form">
+        <div class="draft-row">
+          <label>대상 월<select id="club-month">${clubMonthOptions().map((option) => `<option value="${option.value}" ${clubForm.month === option.value ? "selected" : ""}>${escapeHtml(option.label)}</option>`).join("")}</select></label>
+          <label>동아리명<input id="club-name" type="text" value="${escapeHtml(clubForm.clubName)}" /></label>
+        </div>
+        <div class="draft-row">
+          <label>카드 이름 (목록에서 이 글자가 들어간 카드)<input id="club-card" type="text" value="${escapeHtml(clubForm.cardName)}" placeholder="예: 동아리_커피" /></label>
+          <label>1인당 금액(원)<input id="club-per-person" type="number" min="0" step="1000" value="${clubForm.perPerson}" /></label>
+        </div>
+        <fieldset class="draft-fieldset">
+          <legend>참석자 (${clubForm.attendees.length}명)</legend>
+          ${attendees}
+          <div class="attendee-add"><input id="club-attendee-input" type="text" placeholder="이름 입력 후 Enter" /><button class="secondary" id="club-attendee-add" type="button">추가</button></div>
+        </fieldset>
+        <fieldset class="draft-fieldset">
+          <legend>영수증 파일 (${clubForm.receipts.length}개, 선택)</legend>
+          ${clubForm.receipts.length === 0 ? "" : `<ul class="receipt-list">${clubForm.receipts.map((path, index) => `<li><span>${escapeHtml(fileName(path))}</span><button class="delete-rule" data-remove-receipt="${index}" type="button">삭제</button></li>`).join("")}</ul>`}
+          <button class="secondary" id="club-receipts-pick" type="button">영수증 파일 선택</button>
+          <p class="draft-hint receipt-hint">jpg·png·gif·heic·pdf, 파일당 20MB·합계 50MB까지. 그룹웨어 창에서 결재상신을 누르면 뜨는 결재 작성 창에 앱이 첨부합니다(저장하지 않음).</p>
+        </fieldset>
+        <label>활동 사진 링크 (선택, 저장하지 않음)<input id="club-photo-link" type="url" value="${escapeHtml(clubForm.photoLink)}" placeholder="Slack 메시지 링크 등" /></label>
+        <div class="club-preview">
+          <div class="club-preview-heading"><span>결재 본문에 붙여 넣을 문구</span><button class="secondary" id="club-copy" type="button">복사</button></div>
+          <pre id="club-preview-text">${escapeHtml(clubPreviewText())}</pre>
+        </div>
+        <p class="draft-hint">제목 입력 → 카드사용내역에서 대상 월 카드 내역 전체 선택·확인 → 행마다 용도(복리후생비_동아리)·내용을 채웁니다. 카드 영수증 이미지는 카드 내역 확인 시 그룹웨어가 붙이고, 위에서 고른 영수증 파일은 결재 작성 창에 앱이 첨부합니다. 첨부 목록을 확인하세요. 활동 사진은 Slack 링크를 위 칸에 넣고 복사한 문구를 본문에 붙여 넣으세요.</p>
+      </div>
+      <div class="modal-actions"><button class="secondary" id="draft-back" type="button">뒤로</button><button class="primary" id="club-open" type="button">양식 열기</button></div>
+    </section></div>`;
+  }
   return "";
 }
 
@@ -291,12 +435,14 @@ function render(): void {
       <div class="brand"><span class="brand-mark">A</span><div><h1>근무시간 계산기</h1><p>아마란스 출결 월간 정리</p></div></div>
       <nav class="header-actions" aria-label="파일 및 규칙">
         <button class="primary" id="groupware-button" type="button">그룹웨어에서 불러오기</button>
+        <button class="secondary" id="draft-button" type="button">기안 작성</button>
         <button class="secondary" id="credentials-button" type="button">자동 로그인 설정</button>
         <button class="secondary" id="open-button" type="button">엑셀 파일 열기</button>
         <button class="secondary" id="rules-button" type="button">규칙 설정</button>
       </nav>
     </header>
     ${banner()}
+    ${draftBanner()}
     ${renderDropZone()}
     ${report ? renderReport(report) : renderEmpty()}
     ${renderModal()}
@@ -582,6 +728,190 @@ async function calculateToday(): Promise<void> {
   }
 }
 
+function stopDraftPoll(): void {
+  if (draftPoll !== null) window.clearInterval(draftPoll);
+  draftPoll = null;
+}
+
+async function showDraftChooser(): Promise<void> {
+  try {
+    const settings = await invoke<DraftSettings>("draft_settings");
+    const today = localDate(new Date());
+    leaveForm = { kind: leaveForm.kind, from: leaveForm.from || today, to: leaveForm.to || today, reason: settings.leaveReason };
+    clubForm = {
+      month: clubForm.month || clubMonthOptions()[0].value,
+      clubName: settings.clubName,
+      cardName: settings.cardName,
+      attendees: [...settings.attendees],
+      perPerson: settings.perPerson,
+      photoLink: clubForm.photoLink,
+      receipts: clubForm.receipts,
+    };
+    activeModal = "draftChooser";
+    render();
+  } catch (error) {
+    setError(error);
+  }
+}
+
+function readClubFields(): void {
+  clubForm.month = document.querySelector<HTMLSelectElement>("#club-month")?.value ?? clubForm.month;
+  clubForm.clubName = document.querySelector<HTMLInputElement>("#club-name")?.value ?? clubForm.clubName;
+  clubForm.cardName = document.querySelector<HTMLInputElement>("#club-card")?.value ?? clubForm.cardName;
+  const perPerson = Number(document.querySelector<HTMLInputElement>("#club-per-person")?.value ?? clubForm.perPerson);
+  clubForm.perPerson = Number.isFinite(perPerson) && perPerson >= 0 ? Math.round(perPerson) : 0;
+  clubForm.photoLink = document.querySelector<HTMLInputElement>("#club-photo-link")?.value ?? clubForm.photoLink;
+}
+
+function updateClubPreview(): void {
+  readClubFields();
+  const preview = document.querySelector<HTMLElement>("#club-preview-text");
+  if (preview) preview.textContent = clubPreviewText();
+}
+
+function addAttendee(): void {
+  readClubFields();
+  const input = document.querySelector<HTMLInputElement>("#club-attendee-input");
+  const names = (input?.value ?? "").split(/[,，]/).map((name) => name.trim()).filter(Boolean);
+  clubForm.attendees.push(...names.filter((name) => !clubForm.attendees.includes(name)));
+  render();
+  document.querySelector<HTMLInputElement>("#club-attendee-input")?.focus();
+}
+
+async function copyClubPreview(): Promise<void> {
+  readClubFields();
+  const text = clubPreviewText();
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  const button = document.querySelector<HTMLButtonElement>("#club-copy");
+  if (button) button.textContent = "복사됨";
+}
+
+async function pickReceipts(): Promise<void> {
+  readClubFields();
+  try {
+    const selected = await open({
+      multiple: true,
+      filters: [{ name: "영수증", extensions: ["jpg", "jpeg", "png", "gif", "heic", "pdf"] }],
+    });
+    const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+    clubForm.receipts.push(...paths.filter((path) => !clubForm.receipts.includes(path)));
+    render();
+  } catch (error) {
+    draftNotice = { tone: "error", text: errorText(error) };
+    render();
+  }
+}
+
+function draftDoneText(): string {
+  return draftKind === "club"
+    ? "그룹웨어 창에서 내용을 확인한 뒤 상신하세요. 카드 영수증 이미지는 카드 내역 확인 시 그룹웨어가 붙입니다. 첨부 목록을 확인하세요. 활동 사진은 복사한 문구로 본문에 링크를 붙여 넣으세요."
+    : "그룹웨어 창에서 내용을 확인한 뒤 신청완료를 직접 누르세요.";
+}
+
+async function pollDraftStatus(): Promise<void> {
+  try {
+    const status = await invoke<DraftStatus>("draft_status");
+    switch (status.state) {
+      case "opening":
+        draftNotice = { tone: "info", text: "그룹웨어 기안 창을 여는 중…" };
+        break;
+      case "login":
+        draftNotice = { tone: "info", text: status.message || "그룹웨어 로그인이 필요합니다" };
+        break;
+      case "filling":
+        draftNotice = { tone: "info", text: `양식을 채우는 중…${status.step ? ` (${status.step})` : ""}` };
+        break;
+      case "awaitingReceipts":
+        draftNotice = { tone: "info", text: status.message };
+        break;
+      case "done":
+        stopDraftPoll();
+        draftNotice = { tone: "success", text: status.message || draftDoneText() };
+        break;
+      case "empty":
+        stopDraftPoll();
+        draftNotice = { tone: "error", text: `${status.message || "반영할 카드 내역이 없습니다"}. 카드사용 내역 창을 열어 두었으니 기간·카드를 확인하세요.` };
+        break;
+      case "failed":
+        stopDraftPoll();
+        draftNotice = { tone: "error", text: `기안 채우기를 멈췄습니다${status.step ? ` — ${status.step}` : ""}: ${status.message}. 그룹웨어 창은 열어 두었습니다.` };
+        break;
+      case "closed":
+        stopDraftPoll();
+        draftNotice = { tone: "info", text: "기안 창이 닫혔습니다." };
+        break;
+      default:
+        return;
+    }
+    render();
+  } catch (error) {
+    stopDraftPoll();
+    draftNotice = { tone: "error", text: errorText(error) };
+    render();
+  }
+}
+
+async function openDraft(kind: "leave" | "club", command: string, request: unknown): Promise<void> {
+  stopDraftPoll();
+  try {
+    await invoke(command, { request });
+    draftKind = kind;
+    activeModal = null;
+    errorMessage = "";
+    draftNotice = { tone: "info", text: "그룹웨어 기안 창을 여는 중…" };
+    render();
+    draftPoll = window.setInterval(() => void pollDraftStatus(), 1000);
+  } catch (error) {
+    draftNotice = { tone: "error", text: errorText(error) };
+    render();
+  }
+}
+
+async function openLeaveDraft(): Promise<void> {
+  leaveForm.from = document.querySelector<HTMLInputElement>("#leave-from")?.value ?? "";
+  leaveForm.to = leaveForm.kind === "annual" ? document.querySelector<HTMLInputElement>("#leave-to")?.value ?? "" : leaveForm.from;
+  leaveForm.reason = document.querySelector<HTMLInputElement>("#leave-reason")?.value ?? "";
+  if (!leaveForm.from || !leaveForm.to) {
+    draftNotice = { tone: "error", text: "날짜를 입력하세요." };
+    render();
+    return;
+  }
+  if (leaveForm.to < leaveForm.from) {
+    draftNotice = { tone: "error", text: "종료일이 시작일보다 빠릅니다." };
+    render();
+    return;
+  }
+  await openDraft("leave", "open_leave_draft", { ...leaveForm });
+}
+
+async function openClubDraft(): Promise<void> {
+  readClubFields();
+  const [year, month] = clubForm.month.split("-").map(Number);
+  if (!clubForm.clubName.trim() || !clubForm.cardName.trim()) {
+    draftNotice = { tone: "error", text: "동아리명과 카드 이름을 입력하세요." };
+    render();
+    return;
+  }
+  await openDraft("club", "open_club_draft", {
+    year,
+    month,
+    clubName: clubForm.clubName,
+    cardName: clubForm.cardName,
+    attendees: clubForm.attendees,
+    perPerson: clubForm.perPerson,
+    receipts: clubForm.receipts,
+  });
+}
+
 function bindControls(): void {
   document.querySelector("#open-button")?.addEventListener("click", () => void chooseFile());
   document.querySelector("#groupware-button")?.addEventListener("click", () => void loadGroupware());
@@ -613,6 +943,69 @@ function bindControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-delete-rule]").forEach((button) => {
     button.addEventListener("click", () => void deleteRule(button.dataset.deleteRule ?? ""));
   });
+  bindDraftControls();
+}
+
+function bindDraftControls(): void {
+  document.querySelector("#draft-button")?.addEventListener("click", () => void showDraftChooser());
+  document.querySelector("#draft-notice-close")?.addEventListener("click", () => {
+    draftNotice = null;
+    render();
+  });
+  document.querySelector("#draft-cancel")?.addEventListener("click", () => {
+    activeModal = null;
+    render();
+  });
+  document.querySelector("#draft-back")?.addEventListener("click", () => {
+    if (activeModal === "clubDraft") readClubFields();
+    activeModal = "draftChooser";
+    render();
+  });
+  document.querySelector("#draft-choose-leave")?.addEventListener("click", () => {
+    activeModal = "leaveDraft";
+    render();
+  });
+  document.querySelector("#draft-choose-club")?.addEventListener("click", () => {
+    activeModal = "clubDraft";
+    render();
+  });
+  document.querySelectorAll<HTMLInputElement>('input[name="leave-kind"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      leaveForm.from = document.querySelector<HTMLInputElement>("#leave-from")?.value ?? leaveForm.from;
+      leaveForm.to = document.querySelector<HTMLInputElement>("#leave-to")?.value ?? leaveForm.to;
+      leaveForm.reason = document.querySelector<HTMLInputElement>("#leave-reason")?.value ?? leaveForm.reason;
+      leaveForm.kind = input.value as LeaveKind;
+      render();
+    });
+  });
+  document.querySelector("#leave-open")?.addEventListener("click", () => void openLeaveDraft());
+  ["#club-month", "#club-name", "#club-card", "#club-per-person", "#club-photo-link"].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener("input", updateClubPreview);
+  });
+  document.querySelector("#club-attendee-add")?.addEventListener("click", addAttendee);
+  document.querySelector<HTMLInputElement>("#club-attendee-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.isComposing) {
+      event.preventDefault();
+      addAttendee();
+    }
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-attendee]").forEach((button) => {
+    button.addEventListener("click", () => {
+      readClubFields();
+      clubForm.attendees.splice(Number(button.dataset.removeAttendee), 1);
+      render();
+    });
+  });
+  document.querySelector("#club-copy")?.addEventListener("click", () => void copyClubPreview());
+  document.querySelector("#club-receipts-pick")?.addEventListener("click", () => void pickReceipts());
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-receipt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      readClubFields();
+      clubForm.receipts.splice(Number(button.dataset.removeReceipt), 1);
+      render();
+    });
+  });
+  document.querySelector("#club-open")?.addEventListener("click", () => void openClubDraft());
 }
 
 render();
